@@ -1,0 +1,605 @@
+//@version=6
+indicator("VDT Volume Profile — Daily & Weekly (Multi-TF)", shorttitle="VDT VP D+W", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ============================================================
+// 1) INPUTS
+// ============================================================
+grpGeneral = "1. General"
+numRows           = input.int(24, "Number of Rows (nếu tắt Auto)", minval=5, maxval=100, group=grpGeneral, tooltip="Số dòng cố định, chỉ dùng khi 'Auto Row Size' tắt.")
+autoRowSize       = input.bool(true, "Auto Row Size (theo Tick Size)", group=grpGeneral, tooltip="Tự tính số dòng dựa theo min tick của symbol, giống độ phân giải TradingView dùng khi vẽ tay. Khuyến nghị bật.")
+maxAutoRows       = input.int(60, "Max Rows (khi Auto)", minval=20, maxval=200, group=grpGeneral, tooltip="Giới hạn trên số dòng khi bật Auto, để tránh quá tải.")
+lookbackDays      = input.int(5, "Number of Past Days to Keep", minval=1, maxval=100, group=grpGeneral, tooltip="Số ngày quá khứ giữ lại trên chart.")
+vaPercent         = input.float(70, "Value Area %", minval=50, maxval=100, step=1, group=grpGeneral)
+profileWidthBars  = input.int(20, "Profile Width (bars)", minval=5, maxval=200, group=grpGeneral, tooltip="Độ rộng (số bar) của histogram volume profile.")
+intrabarTF        = input.timeframe("1", "Intrabar Resolution", group=grpGeneral, tooltip="Timeframe nhỏ hơn dùng để lấy volume chi tiết bên trong mỗi nến (giống cách TradingView tính khi vẽ tay). Phải NHỎ HƠN timeframe của chart. '1' = 1 phút. Nếu dữ liệu hỗ trợ, có thể thử '1S'.")
+
+grpCurDay = "2. Current Day (dùng cho M5)"
+showCurrentDay = input.bool(true, "Show Developing Profile for Today", group=grpCurDay)
+showPastDaysBoxes = input.bool(true, "Show Past Days Volume Profile (Boxes)", group=grpCurDay, tooltip="Tắt để ẩn histogram của các ngày cũ, chỉ giữ lại profile của hôm nay.")
+showPastDaysLines = input.bool(true, "Show Past Days POC/VAH/VAL Lines", group=grpCurDay, tooltip="Tắt để ẩn luôn đường POC/VAH/VAL (kể cả line nét đứt kéo sang hôm nay) của các ngày cũ.")
+
+grpColors = "3. Colors (Daily)"
+colProfile    = input.color(color.new(color.blue, 65), "Profile (ngoài Value Area)", group=grpColors)
+colVA         = input.color(color.new(color.orange, 55), "Value Area", group=grpColors)
+colCurProfile = input.color(color.new(color.aqua, 70), "Profile hôm nay", group=grpColors)
+colPOC        = input.color(color.yellow, "POC Line", group=grpColors)
+colVAH        = input.color(color.new(color.orange, 0), "VAH Line", group=grpColors)
+colVAL        = input.color(color.new(color.orange, 0), "VAL Line", group=grpColors)
+
+grpLines = "4. Extended Lines (Ngày trước → Hôm nay)"
+lineWidthExt = input.int(1, "Line Width", minval=1, maxval=4, group=grpLines)
+showLabels   = input.bool(true, "Show Price Labels", group=grpLines)
+
+grpWeekly = "5. Weekly Volume Profile (dùng cho H4)"
+showWeeklyProfile   = input.bool(false, "Bật Volume Profile theo Tuần", group=grpWeekly, tooltip="Vẽ thêm 1 lớp Volume Profile tính theo tuần, song song với Daily. Dùng khi trade khung H4.")
+weeklyLookback      = input.int(4, "Number of Past Weeks to Keep", minval=1, maxval=100, group=grpWeekly)
+showCurrentWeek     = input.bool(true, "Show Developing Profile for This Week", group=grpWeekly)
+weeklyNumRows       = input.int(24, "Number of Rows tuần (nếu tắt Auto)", minval=5, maxval=100, group=grpWeekly)
+maxAutoRowsW        = input.int(40, "Max Rows tuần (khi Auto)", minval=10, maxval=150, group=grpWeekly, tooltip="Nên để THẤP hơn Daily vì range 1 tuần thường rộng hơn nhiều — nếu để cao dễ chạm giới hạn 500 box/line của toàn indicator.")
+weeklyProfileWidthBars = input.int(40, "Weekly Profile Width (bars)", minval=5, maxval=300, group=grpWeekly, tooltip="Thường nên để rộng hơn Daily vì mỗi 'ngày vẽ' của box tuần trải dài nhiều bar hơn (kéo dài cả tuần).")
+lineWidthExtW       = input.int(2, "Weekly Line Width", minval=1, maxval=4, group=grpWeekly)
+showPastWeeksBoxes = input.bool(true, "Show Past Weeks Volume Profile (Boxes)", group=grpWeekly, tooltip="Tắt để ẩn histogram của các tuần cũ, chỉ giữ lại profile của tuần này.")
+showPastWeeksLines = input.bool(true, "Show Past Weeks POC/VAH/VAL Lines", group=grpWeekly, tooltip="Tắt để ẩn luôn đường POC/VAH/VAL (kể cả line nét đứt kéo sang tuần này) của các tuần cũ.")
+
+grpColorsW = "6. Colors (Weekly)"
+colProfileW    = input.color(color.new(color.purple, 65), "Profile tuần (ngoài VA)", group=grpColorsW)
+colVAW         = input.color(color.new(color.teal, 55), "Value Area tuần", group=grpColorsW)
+colCurProfileW = input.color(color.new(color.fuchsia, 70), "Profile tuần hiện tại", group=grpColorsW)
+colPOCW        = input.color(color.white, "POC Line tuần", group=grpColorsW)
+colVAHW        = input.color(color.new(color.teal, 0), "VAH Line tuần", group=grpColorsW)
+colVALW        = input.color(color.new(color.teal, 0), "VAL Line tuần", group=grpColorsW)
+
+extLineStyle     = line.style_dashed
+sessionLineStyle = line.style_solid
+
+// ============================================================
+// 2) FUNCTIONS (dùng chung cho cả Daily và Weekly)
+// ============================================================
+f_profileGrid(dHigh, dLow, fixedRows, useAuto, maxRows) =>
+    // TradingView rows always have a whole-number height in ticks.
+    rangeTicks = math.max(1, int(math.ceil((dHigh - dLow) / syminfo.mintick)))
+    requestedRows = useAuto ? maxRows : fixedRows
+    ticksFloor = math.max(1, int(math.floor(rangeTicks / requestedRows)))
+    ticksCeil = math.max(1, int(math.ceil(rangeTicks / requestedRows)))
+    rowsFloor = int(math.ceil(rangeTicks / ticksFloor))
+    rowsCeil = int(math.ceil(rangeTicks / ticksCeil))
+    ticksPerRow = math.abs(rowsFloor - requestedRows) <= math.abs(rowsCeil - requestedRows) ? ticksFloor : ticksCeil
+    nRows = int(math.ceil(rangeTicks / ticksPerRow))
+    [nRows, ticksPerRow * syminfo.mintick]
+
+f_buildVolByBin(lowArr, highArr, volArr, dLow, nRows, rowHeight) =>
+    var float[] volByBin = array.new_float(0)
+    if array.size(volByBin) != nRows
+        array.clear(volByBin)
+        for i = 0 to nRows - 1
+            array.push(volByBin, 0.0)
+    else
+        for i = 0 to nRows - 1
+            array.set(volByBin, i, 0.0)
+    if rowHeight > 0
+        for i = 0 to array.size(volArr) - 1
+            barLow = array.get(lowArr, i)
+            barHigh = array.get(highArr, i)
+            v = array.get(volArr, i)
+            barRange = barHigh - barLow
+            if barRange <= 0
+                idx = int(math.min(nRows - 1, math.max(0, math.floor((barLow - dLow) / rowHeight))))
+                array.set(volByBin, idx, array.get(volByBin, idx) + v)
+            else
+                firstIdx = int(math.min(nRows - 1, math.max(0, math.floor((barLow - dLow) / rowHeight))))
+                lastIdx = int(math.min(nRows - 1, math.max(0, math.floor((barHigh - dLow) / rowHeight))))
+                for j = firstIdx to lastIdx
+                    binLow = dLow + j * rowHeight
+                    binHigh = binLow + rowHeight
+                    overlap = math.max(0.0, math.min(barHigh, binHigh) - math.max(barLow, binLow))
+                    if overlap > 0
+                        array.set(volByBin, j, array.get(volByBin, j) + v * overlap / barRange)
+    volByBin
+
+f_valueArea(volByBin, dLow, nRows, rowHeight, vaPct) =>
+    total = array.sum(volByBin)
+    maxVol = array.max(volByBin)
+    pocIdx = array.indexof(volByBin, maxVol)
+    targetVol = total * vaPct / 100
+    lowI = pocIdx
+    highI = pocIdx
+    vaVol = array.get(volByBin, pocIdx)
+    while vaVol < targetVol and (lowI > 0 or highI < nRows - 1)
+        lowVol = lowI > 0 ? array.get(volByBin, lowI - 1) : -1.0
+        highVol = highI < nRows - 1 ? array.get(volByBin, highI + 1) : -1.0
+        lowDist = lowI > 0 ? pocIdx - (lowI - 1) : 1000000
+        highDist = highI < nRows - 1 ? (highI + 1) - pocIdx : 1000000
+        chooseHigh = highVol > lowVol or (highVol == lowVol and highDist <= lowDist)
+        candidateVol = chooseHigh ? highVol : lowVol
+        if vaVol + candidateVol > targetVol
+            break
+        if chooseHigh
+            highI := highI + 1
+        else
+            lowI := lowI - 1
+        vaVol := vaVol + candidateVol
+    pocPrice = dLow + (pocIdx + 0.5) * rowHeight
+    vahPrice = dLow + (highI + 1) * rowHeight
+    valPrice = dLow + lowI * rowHeight
+    [pocPrice, vahPrice, valPrice, pocIdx, lowI, highI, total, targetVol, maxVol]
+
+f_drawProfile(volByBin, dLow, nRows, rowHeight, xLeft, widthBars, lowI, highI, colOut, colIn) =>
+    boxes = array.new_box(0)
+    maxVol = array.max(volByBin)
+    if maxVol > 0
+        for j = 0 to nRows - 1
+            v = array.get(volByBin, j)
+            if v > 0
+                w = math.max(int(widthBars * (v / maxVol)), 1)
+                yTop = dLow + (j + 1) * rowHeight
+                yBot = dLow + j * rowHeight
+                col = (j >= lowI and j <= highI) ? colIn : colOut
+                b = box.new(xLeft, yTop, xLeft + w, yBot, border_color=na, bgcolor=col)
+                array.push(boxes, b)
+    boxes
+
+// ============================================================
+// 3) STATE — DAILY
+// ============================================================
+var float[] curLow   = array.new_float(0)
+var float[] curHigh  = array.new_float(0)
+var float[] curVol   = array.new_float(0)
+var float dayHigh = na
+var float dayLow  = na
+var int   dayStartBar = na
+
+var box[]  boxStore = array.new_box(0)
+var int[]  dayBoxCounts = array.new_int(0)
+var line[] lineStore = array.new_line(0)
+var int[]  dayLineCounts = array.new_int(0)
+
+var line pocLineExt = na
+var line vahLineExt = na
+var line valLineExt = na
+var label pocLabelExt = na
+var label vahLabelExt = na
+var label valLabelExt = na
+
+var box[] curDayBoxes = array.new_box(0)
+var line curPocLine = na
+var line curVahLine = na
+var line curValLine = na
+var label curPocLabel = na
+var label curVahLabel = na
+var label curValLabel = na
+
+// ============================================================
+// 3b) STATE — WEEKLY (mới)
+// ============================================================
+var float[] curLowW   = array.new_float(0)
+var float[] curHighW  = array.new_float(0)
+var float[] curVolW   = array.new_float(0)
+var float weekHigh = na
+var float weekLow  = na
+var int   weekStartBar = na
+
+var box[]  boxStoreW = array.new_box(0)
+var int[]  weekBoxCounts = array.new_int(0)
+var line[] lineStoreW = array.new_line(0)
+var int[]  weekLineCounts = array.new_int(0)
+
+var line pocLineExtW = na
+var line vahLineExtW = na
+var line valLineExtW = na
+var label pocLabelExtW = na
+var label vahLabelExtW = na
+var label valLabelExtW = na
+
+var box[] curWeekBoxes = array.new_box(0)
+var line curPocLineW = na
+var line curVahLineW = na
+var line curValLineW = na
+var label curPocLabelW = na
+var label curVahLabelW = na
+var label curValLabelW = na
+
+// ============================================================
+// 4) INTRABAR DATA (độ phân giải cao hơn chart, giống cách vẽ tay của TradingView)
+// ============================================================
+lowerLows   = request.security_lower_tf(syminfo.tickerid, intrabarTF, low)
+lowerHighs  = request.security_lower_tf(syminfo.tickerid, intrabarTF, high)
+lowerVols   = request.security_lower_tf(syminfo.tickerid, intrabarTF, volume)
+
+// ============================================================
+// 5) NEW DAY DETECTION + FINALIZE PREVIOUS DAY (Daily → dùng cho M5)
+// ============================================================
+newDay = na(time[1]) or ta.change(time("D")) != 0
+
+if newDay
+    if array.size(curLow) > 0
+        // Dùng chính biên cao/thấp của dữ liệu intrabar đã gom được (không dùng dayHigh/dayLow
+        // lấy từ nến gốc), để lưới giá LUÔN khớp tuyệt đối với dữ liệu đổ vào histogram —
+        // tránh tạo khoảng trống giả do lệch giữa 2 nguồn dữ liệu khác timeframe.
+        trueDayLow  = array.min(curLow)
+        trueDayHigh = array.max(curHigh)
+
+        [nRowsDay, rowHeightDay] = f_profileGrid(trueDayHigh, trueDayLow, numRows, autoRowSize, maxAutoRows)
+        volByBin = f_buildVolByBin(curLow, curHigh, curVol, trueDayLow, nRowsDay, rowHeightDay)
+        [pocP, vahP, valP, pocIdx, lowI, highI, totalVol, targetVol, pocVol] = f_valueArea(volByBin, trueDayLow, nRowsDay, rowHeightDay, vaPercent)
+
+        if showPastDaysBoxes
+            newBoxes = f_drawProfile(volByBin, trueDayLow, nRowsDay, rowHeightDay, dayStartBar, profileWidthBars, lowI, highI, colProfile, colVA)
+            if array.size(newBoxes) > 0
+                for i = 0 to array.size(newBoxes) - 1
+                    array.push(boxStore, array.get(newBoxes, i))
+            array.push(dayBoxCounts, array.size(newBoxes))
+        else
+            array.push(dayBoxCounts, 0)
+
+        lastBarPrevDay = bar_index - 1
+
+        if showPastDaysLines
+            pocSolid = line.new(dayStartBar, pocP, lastBarPrevDay, pocP, color=colPOC, width=lineWidthExt, style=sessionLineStyle)
+            vahSolid = line.new(dayStartBar, vahP, lastBarPrevDay, vahP, color=colVAH, width=lineWidthExt, style=sessionLineStyle)
+            valSolid = line.new(dayStartBar, valP, lastBarPrevDay, valP, color=colVAL, width=lineWidthExt, style=sessionLineStyle)
+
+            pocLineExt := line.new(bar_index, pocP, bar_index, pocP, color=colPOC, width=lineWidthExt, style=extLineStyle)
+            vahLineExt := line.new(bar_index, vahP, bar_index, vahP, color=colVAH, width=lineWidthExt, style=extLineStyle)
+            valLineExt := line.new(bar_index, valP, bar_index, valP, color=colVAL, width=lineWidthExt, style=extLineStyle)
+
+            array.push(lineStore, pocSolid)
+            array.push(lineStore, vahSolid)
+            array.push(lineStore, valSolid)
+            array.push(lineStore, pocLineExt)
+            array.push(lineStore, vahLineExt)
+            array.push(lineStore, valLineExt)
+            array.push(dayLineCounts, 6)
+        else
+            pocLineExt := na
+            vahLineExt := na
+            valLineExt := na
+            array.push(dayLineCounts, 0)
+
+        if array.size(dayBoxCounts) > lookbackDays
+            n = array.shift(dayBoxCounts)
+            if n > 0
+                for i = 1 to n
+                    box.delete(array.shift(boxStore))
+        if array.size(dayLineCounts) > lookbackDays
+            nl = array.shift(dayLineCounts)
+            if nl > 0
+                for i = 1 to nl
+                    line.delete(array.shift(lineStore))
+
+    array.clear(curLow)
+    array.clear(curHigh)
+    array.clear(curVol)
+    dayHigh := high
+    dayLow  := low
+    dayStartBar := bar_index
+else
+    dayHigh := math.max(dayHigh, high)
+    dayLow  := math.min(dayLow, low)
+
+// ============================================================
+// 5b) NEW WEEK DETECTION + FINALIZE PREVIOUS WEEK (Weekly → dùng cho H4) — mới
+// ============================================================
+newWeek = na(time[1]) or ta.change(time("W")) != 0
+
+if showWeeklyProfile
+    if newWeek
+        if array.size(curLowW) > 0
+            trueWeekLow  = array.min(curLowW)
+            trueWeekHigh = array.max(curHighW)
+
+            [nRowsWeek, rowHeightWeek] = f_profileGrid(trueWeekHigh, trueWeekLow, weeklyNumRows, autoRowSize, maxAutoRowsW)
+            volByBinW = f_buildVolByBin(curLowW, curHighW, curVolW, trueWeekLow, nRowsWeek, rowHeightWeek)
+            [pocPW, vahPW, valPW, pocIdxW, lowIW, highIW, totalVolW, targetVolW, pocVolW] = f_valueArea(volByBinW, trueWeekLow, nRowsWeek, rowHeightWeek, vaPercent)
+
+            if showPastWeeksBoxes
+                newBoxesW = f_drawProfile(volByBinW, trueWeekLow, nRowsWeek, rowHeightWeek, weekStartBar, weeklyProfileWidthBars, lowIW, highIW, colProfileW, colVAW)
+                if array.size(newBoxesW) > 0
+                    for i = 0 to array.size(newBoxesW) - 1
+                        array.push(boxStoreW, array.get(newBoxesW, i))
+                array.push(weekBoxCounts, array.size(newBoxesW))
+            else
+                array.push(weekBoxCounts, 0)
+
+            lastBarPrevWeek = bar_index - 1
+
+            if showPastWeeksLines
+                pocSolidW = line.new(weekStartBar, pocPW, lastBarPrevWeek, pocPW, color=colPOCW, width=lineWidthExtW, style=sessionLineStyle)
+                vahSolidW = line.new(weekStartBar, vahPW, lastBarPrevWeek, vahPW, color=colVAHW, width=lineWidthExtW, style=sessionLineStyle)
+                valSolidW = line.new(weekStartBar, valPW, lastBarPrevWeek, valPW, color=colVALW, width=lineWidthExtW, style=sessionLineStyle)
+
+                pocLineExtW := line.new(bar_index, pocPW, bar_index, pocPW, color=colPOCW, width=lineWidthExtW, style=extLineStyle)
+                vahLineExtW := line.new(bar_index, vahPW, bar_index, vahPW, color=colVAHW, width=lineWidthExtW, style=extLineStyle)
+                valLineExtW := line.new(bar_index, valPW, bar_index, valPW, color=colVALW, width=lineWidthExtW, style=extLineStyle)
+
+                array.push(lineStoreW, pocSolidW)
+                array.push(lineStoreW, vahSolidW)
+                array.push(lineStoreW, valSolidW)
+                array.push(lineStoreW, pocLineExtW)
+                array.push(lineStoreW, vahLineExtW)
+                array.push(lineStoreW, valLineExtW)
+                array.push(weekLineCounts, 6)
+            else
+                pocLineExtW := na
+                vahLineExtW := na
+                valLineExtW := na
+                array.push(weekLineCounts, 0)
+
+            if array.size(weekBoxCounts) > weeklyLookback
+                nW = array.shift(weekBoxCounts)
+                if nW > 0
+                    for i = 1 to nW
+                        box.delete(array.shift(boxStoreW))
+            if array.size(weekLineCounts) > weeklyLookback
+                nlW = array.shift(weekLineCounts)
+                if nlW > 0
+                    for i = 1 to nlW
+                        line.delete(array.shift(lineStoreW))
+
+        array.clear(curLowW)
+        array.clear(curHighW)
+        array.clear(curVolW)
+        weekHigh := high
+        weekLow  := low
+        weekStartBar := bar_index
+    else
+        weekHigh := math.max(weekHigh, high)
+        weekLow  := math.min(weekLow, low)
+
+// ============================================================
+// 6) NẠP DỮ LIỆU INTRABAR CỦA BAR HIỆN TẠI VÀO CẢ 2 BUFFER (Daily + Weekly)
+// ============================================================
+if array.size(lowerLows) > 0
+    for k = 0 to array.size(lowerLows) - 1
+        lv = array.get(lowerLows, k)
+        hv = array.get(lowerHighs, k)
+        vv = array.get(lowerVols, k)
+        array.push(curLow, lv)
+        array.push(curHigh, hv)
+        array.push(curVol, vv)
+        if showWeeklyProfile
+            array.push(curLowW, lv)
+            array.push(curHighW, hv)
+            array.push(curVolW, vv)
+else
+    array.push(curLow, low)
+    array.push(curHigh, high)
+    array.push(curVol, volume)
+    if showWeeklyProfile
+        array.push(curLowW, low)
+        array.push(curHighW, high)
+        array.push(curVolW, volume)
+
+// ============================================================
+// 7) EXTEND PREVIOUS-DAY LINES/LABELS INTO TODAY
+// ============================================================
+if not na(pocLineExt)
+    line.set_x2(pocLineExt, bar_index)
+    line.set_x2(vahLineExt, bar_index)
+    line.set_x2(valLineExt, bar_index)
+    if showLabels
+        label.delete(pocLabelExt)
+        label.delete(vahLabelExt)
+        label.delete(valLabelExt)
+        pocLabelExt := label.new(bar_index, line.get_y2(pocLineExt), "pPOC " + str.tostring(line.get_y2(pocLineExt), format.mintick), style=label.style_label_left, color=color.new(colPOC, 100), textcolor=colPOC, size=size.small)
+        vahLabelExt := label.new(bar_index, line.get_y2(vahLineExt), "pVAH " + str.tostring(line.get_y2(vahLineExt), format.mintick), style=label.style_label_left, color=color.new(colVAH, 100), textcolor=colVAH, size=size.small)
+        valLabelExt := label.new(bar_index, line.get_y2(valLineExt), "pVAL " + str.tostring(line.get_y2(valLineExt), format.mintick), style=label.style_label_left, color=color.new(colVAL, 100), textcolor=colVAL, size=size.small)
+
+// ============================================================
+// 7b) EXTEND PREVIOUS-WEEK LINES/LABELS INTO TUẦN NÀY — mới
+// ============================================================
+if showWeeklyProfile and not na(pocLineExtW)
+    line.set_x2(pocLineExtW, bar_index)
+    line.set_x2(vahLineExtW, bar_index)
+    line.set_x2(valLineExtW, bar_index)
+    if showLabels
+        label.delete(pocLabelExtW)
+        label.delete(vahLabelExtW)
+        label.delete(valLabelExtW)
+        pocLabelExtW := label.new(bar_index, line.get_y2(pocLineExtW), "pwPOC " + str.tostring(line.get_y2(pocLineExtW), format.mintick), style=label.style_label_left, color=color.new(colPOCW, 100), textcolor=colPOCW, size=size.small)
+        vahLabelExtW := label.new(bar_index, line.get_y2(vahLineExtW), "pwVAH " + str.tostring(line.get_y2(vahLineExtW), format.mintick), style=label.style_label_left, color=color.new(colVAHW, 100), textcolor=colVAHW, size=size.small)
+        valLabelExtW := label.new(bar_index, line.get_y2(valLineExtW), "pwVAL " + str.tostring(line.get_y2(valLineExtW), format.mintick), style=label.style_label_left, color=color.new(colVALW, 100), textcolor=colVALW, size=size.small)
+
+// ============================================================
+// 8) TODAY'S DEVELOPING PROFILE (chỉ tính ở bar cuối để tối ưu hiệu năng)
+// ============================================================
+if showCurrentDay and barstate.islast
+    if array.size(curDayBoxes) > 0
+        for i = 0 to array.size(curDayBoxes) - 1
+            box.delete(array.get(curDayBoxes, i))
+    array.clear(curDayBoxes)
+
+    trueTodayLow  = array.size(curLow) > 0 ? array.min(curLow) : low
+    trueTodayHigh = array.size(curHigh) > 0 ? array.max(curHigh) : high
+
+    [nRowsCur, rowHeightCur] = f_profileGrid(trueTodayHigh, trueTodayLow, numRows, autoRowSize, maxAutoRows)
+    volByBinCur = f_buildVolByBin(curLow, curHigh, curVol, trueTodayLow, nRowsCur, rowHeightCur)
+    [pocPc, vahPc, valPc, pocIdxC, lowIc, highIc, totalVolC, targetVolC, pocVolC] = f_valueArea(volByBinCur, trueTodayLow, nRowsCur, rowHeightCur, vaPercent)
+    boxesCur = f_drawProfile(volByBinCur, trueTodayLow, nRowsCur, rowHeightCur, dayStartBar, profileWidthBars, lowIc, highIc, colCurProfile, colCurProfile)
+    if array.size(boxesCur) > 0
+        for i = 0 to array.size(boxesCur) - 1
+            array.push(curDayBoxes, array.get(boxesCur, i))
+
+    line.delete(curPocLine)
+    line.delete(curVahLine)
+    line.delete(curValLine)
+    curPocLine := line.new(dayStartBar, pocPc, bar_index, pocPc, color=color.white, width=1, style=sessionLineStyle)
+    curVahLine := line.new(dayStartBar, vahPc, bar_index, vahPc, color=colVAH, width=1, style=sessionLineStyle)
+    curValLine := line.new(dayStartBar, valPc, bar_index, valPc, color=colVAL, width=1, style=sessionLineStyle)
+    if showLabels
+        label.delete(curPocLabel)
+        label.delete(curVahLabel)
+        label.delete(curValLabel)
+        curPocLabel := label.new(bar_index, pocPc, "POC " + str.tostring(pocPc, format.mintick), style=label.style_label_left, color=color.new(color.white, 100), textcolor=color.white, size=size.small)
+        curVahLabel := label.new(bar_index, vahPc, "VAH " + str.tostring(vahPc, format.mintick), style=label.style_label_left, color=color.new(colVAH, 100), textcolor=colVAH, size=size.small)
+        curValLabel := label.new(bar_index, valPc, "VAL " + str.tostring(valPc, format.mintick), style=label.style_label_left, color=color.new(colVAL, 100), textcolor=colVAL, size=size.small)
+
+// ============================================================
+// 8b) THIS WEEK'S DEVELOPING PROFILE — mới (chỉ tính ở bar cuối)
+// ============================================================
+if showWeeklyProfile and showCurrentWeek and barstate.islast
+    if array.size(curWeekBoxes) > 0
+        for i = 0 to array.size(curWeekBoxes) - 1
+            box.delete(array.get(curWeekBoxes, i))
+    array.clear(curWeekBoxes)
+
+    trueWeekLowC  = array.size(curLowW) > 0 ? array.min(curLowW) : low
+    trueWeekHighC = array.size(curHighW) > 0 ? array.max(curHighW) : high
+
+    [nRowsCurW, rowHeightCurW] = f_profileGrid(trueWeekHighC, trueWeekLowC, weeklyNumRows, autoRowSize, maxAutoRowsW)
+    volByBinCurW = f_buildVolByBin(curLowW, curHighW, curVolW, trueWeekLowC, nRowsCurW, rowHeightCurW)
+    [pocPcW, vahPcW, valPcW, pocIdxCW, lowIcW, highIcW, totalVolCW, targetVolCW, pocVolCW] = f_valueArea(volByBinCurW, trueWeekLowC, nRowsCurW, rowHeightCurW, vaPercent)
+    boxesCurW = f_drawProfile(volByBinCurW, trueWeekLowC, nRowsCurW, rowHeightCurW, weekStartBar, weeklyProfileWidthBars, lowIcW, highIcW, colCurProfileW, colCurProfileW)
+    if array.size(boxesCurW) > 0
+        for i = 0 to array.size(boxesCurW) - 1
+            array.push(curWeekBoxes, array.get(boxesCurW, i))
+
+    line.delete(curPocLineW)
+    line.delete(curVahLineW)
+    line.delete(curValLineW)
+    curPocLineW := line.new(weekStartBar, pocPcW, bar_index, pocPcW, color=color.white, width=1, style=sessionLineStyle)
+    curVahLineW := line.new(weekStartBar, vahPcW, bar_index, vahPcW, color=colVAHW, width=1, style=sessionLineStyle)
+    curValLineW := line.new(weekStartBar, valPcW, bar_index, valPcW, color=colVALW, width=1, style=sessionLineStyle)
+    if showLabels
+        label.delete(curPocLabelW)
+        label.delete(curVahLabelW)
+        label.delete(curValLabelW)
+        curPocLabelW := label.new(bar_index, pocPcW, "wPOC " + str.tostring(pocPcW, format.mintick), style=label.style_label_left, color=color.new(color.white, 100), textcolor=color.white, size=size.small)
+        curVahLabelW := label.new(bar_index, vahPcW, "wVAH " + str.tostring(vahPcW, format.mintick), style=label.style_label_left, color=color.new(colVAHW, 100), textcolor=colVAHW, size=size.small)
+        curValLabelW := label.new(bar_index, valPcW, "wVAL " + str.tostring(valPcW, format.mintick), style=label.style_label_left, color=color.new(colVALW, 100), textcolor=colVALW, size=size.small)
+
+
+// ============================================================
+// A) VDT TREND DOTS (chấm xanh / đỏ lấy từ VDT Trend + SMC)
+//    Thông số cố định theo mặc định của VDT Trend, không bảng.
+// ============================================================
+vt_show = input.bool(true, "Hiện chấm Buy/Sell (VDT Trend)", group="7. VDT Trend Dots")
+vt_showSLTP = input.bool(true, "Hiện line SL / TP", group="7. VDT Trend Dots", tooltip="Tắt để chỉ còn line Entry.")
+
+// ── Thông số cố định (mặc định của VDT Trend + SMC) ──
+vt_emaFastLen = 34
+vt_emaSlowLen = 89
+vt_emaTrendLen = 200
+vt_emaGapPct = 0.06
+vt_stPeriod = 12
+vt_stFactor = 2.0
+vt_rsiLen = 14
+vt_rsiOb = 80.0
+vt_rsiOs = 20.0
+vt_rsiOb1 = 70.0
+vt_rsiOs1 = 30.0
+vt_stochK = 22
+vt_stochD = 5
+vt_stochSmooth = 5
+vt_stochOb = 100.0
+vt_stochB = 0.0
+vt_stochOs = 0.0
+vt_stochS = 100.0
+vt_macdFast = 12
+vt_macdSlow = 26
+vt_macdSig = 9
+vt_adxLen = 14
+vt_adxMin = 9.0
+
+// Thông số lệnh (mặc định VDT Trend, chế độ %)
+vt_slPct  = 0.44
+vt_tp1Pct = 0.33
+vt_tp2Pct = 1.32
+vt_tp3Pct = 1.85
+
+// ── Tính chỉ báo ──
+vt_emaF = ta.ema(close, vt_emaFastLen)
+vt_emaS = ta.ema(close, vt_emaSlowLen)
+vt_emaT = ta.ema(close, vt_emaTrendLen)
+vt_emaGap = math.abs(vt_emaF - vt_emaS) / close * 100
+
+[vt_st, vt_stDir] = ta.supertrend(vt_stFactor, vt_stPeriod)
+
+vt_rsi = ta.rsi(close, vt_rsiLen)
+vt_stochKVal = ta.sma(ta.stoch(close, high, low, vt_stochK), vt_stochSmooth)
+vt_stochDVal = ta.sma(vt_stochKVal, vt_stochD)
+[vt_macdLine, vt_macdSigLine, vt_hist] = ta.macd(close, vt_macdFast, vt_macdSlow, vt_macdSig)
+[vt_diPlus, vt_diMinus, vt_adx] = ta.dmi(vt_adxLen, vt_adxLen)
+
+// ── Điều kiện ──
+vt_adxRising   = vt_adx > vt_adx[1]
+vt_adxSideways = vt_adx < vt_adxMin
+vt_adxFilter   = vt_adx >= vt_adxMin and vt_adxRising
+vt_notSideway  = vt_emaGap > vt_emaGapPct
+
+vt_emaUp   = vt_emaF > vt_emaT and vt_emaF > vt_emaS
+vt_emaDn   = vt_emaF < vt_emaT and vt_emaF < vt_emaS
+vt_stBull  = vt_stDir < 0
+vt_stBear  = vt_stDir > 0
+vt_rsiBull = vt_rsi > vt_rsiOs and vt_rsi < vt_rsiOb1
+vt_rsiBear = vt_rsi < vt_rsiOb and vt_rsi > vt_rsiOs1
+vt_stochBull = vt_stochKVal > vt_stochDVal and vt_stochKVal < vt_stochOb and vt_stochKVal > vt_stochB
+vt_stochBear = vt_stochKVal < vt_stochDVal and vt_stochKVal > vt_stochOs and vt_stochKVal < vt_stochS
+vt_macdBull = vt_hist > 0 and vt_hist > vt_hist[1]
+vt_macdBear = vt_hist < 0 and vt_hist < vt_hist[1]
+
+vt_buyCore  = vt_emaUp and vt_stBull and vt_rsiBull and vt_stochBull
+vt_sellCore = vt_emaDn and vt_stBear and vt_rsiBear and vt_stochBear
+
+vt_buy  = (vt_adxSideways ? (vt_buyCore  and vt_macdBull) : vt_buyCore)  and vt_adxFilter and vt_notSideway and (vt_diPlus > vt_diMinus)
+vt_sell = (vt_adxSideways ? (vt_sellCore and vt_macdBear) : vt_sellCore) and vt_adxFilter and vt_notSideway and (vt_diMinus > vt_diPlus)
+
+// ── Vẽ chấm ──
+plotshape(vt_show and vt_buy,  "Buy Arrow",  shape.circle, location.belowbar, color=color.new(color.green, 0), size=size.tiny)
+plotshape(vt_show and vt_sell, "Sell Arrow", shape.circle, location.abovebar, color=color.new(color.red, 0),   size=size.tiny)
+
+
+// ============================================================
+// B) ENTRY / SL / TP LINES (chỉ lệnh hiện tại, giống VDT Trend)
+//    SL = chặt hơn giữa SL cố định % và Supertrend. Không trailing.
+// ============================================================
+var bool  vt_inTrade  = false
+var bool  vt_isBuy    = false
+var int   vt_entryBar = na
+var float vt_slP  = na
+var float vt_tp1P = na
+var float vt_tp2P = na
+var float vt_tp3P = na
+var line  vt_lnEntry = na
+var line  vt_lnSL    = na
+var line  vt_lnTP1   = na
+var line  vt_lnTP2   = na
+var line  vt_lnTP3   = na
+
+// ── Theo dõi lệnh đang mở: kéo dài line, đóng khi chạm TP3 hoặc SL ──
+if vt_inTrade and bar_index > vt_entryBar
+    line.set_x2(vt_lnEntry, bar_index)
+    if vt_showSLTP
+        line.set_x2(vt_lnSL,  bar_index)
+        line.set_x2(vt_lnTP1, bar_index)
+        line.set_x2(vt_lnTP2, bar_index)
+        line.set_x2(vt_lnTP3, bar_index)
+
+    vt_closed = vt_isBuy ? (high >= vt_tp3P or low <= vt_slP) : (low <= vt_tp3P or high >= vt_slP)
+    if vt_closed
+        vt_inTrade := false
+        line.delete(vt_lnEntry)
+        line.delete(vt_lnSL)
+        line.delete(vt_lnTP1)
+        line.delete(vt_lnTP2)
+        line.delete(vt_lnTP3)
+
+// ── Mở lệnh mới khi có chấm và đang không có lệnh ──
+vt_dir = (vt_buy and not vt_inTrade) ? 1 : (vt_sell and not vt_inTrade) ? -1 : 0
+if vt_dir != 0
+    vt_entry   = close
+    vt_slFixed = vt_entry * (1 - vt_dir * vt_slPct / 100)
+    vt_slNew   = vt_dir > 0 ? math.max(vt_slFixed, nz(vt_st, vt_slFixed)) : math.min(vt_slFixed, nz(vt_st, vt_slFixed))
+
+    vt_inTrade  := true
+    vt_isBuy    := vt_dir > 0
+    vt_entryBar := bar_index
+    vt_slP  := vt_slNew
+    vt_tp1P := vt_entry * (1 + vt_dir * vt_tp1Pct / 100)
+    vt_tp2P := vt_entry * (1 + vt_dir * vt_tp2Pct / 100)
+    vt_tp3P := vt_entry * (1 + vt_dir * vt_tp3Pct / 100)
+
+    vt_lnEntry := line.new(bar_index, vt_entry, bar_index, vt_entry, color=color.white, style=line.style_dashed, width=1)
+    vt_lnSL    := vt_showSLTP ? line.new(bar_index, vt_slP,  bar_index, vt_slP,  color=color.red,   width=1) : na
+    vt_lnTP1   := vt_showSLTP ? line.new(bar_index, vt_tp1P, bar_index, vt_tp1P, color=color.green, width=1) : na
+    vt_lnTP2   := vt_showSLTP ? line.new(bar_index, vt_tp2P, bar_index, vt_tp2P, color=color.green, width=1) : na
+    vt_lnTP3   := vt_showSLTP ? line.new(bar_index, vt_tp3P, bar_index, vt_tp3P, color=color.green, width=1) : na
